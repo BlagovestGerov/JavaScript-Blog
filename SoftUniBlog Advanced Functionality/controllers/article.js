@@ -1,4 +1,6 @@
 const Article = require('mongoose').model('Article');
+const Category = require('mongoose').model('Category');
+const initializeTags = require('./../models/Tag').initializeTags;
 
 module.exports = {
     createGet: (req, res) => {
@@ -10,7 +12,10 @@ module.exports = {
             return;
         }
 
-        res.render('article/create');
+        Category.find({}).then(categories => {
+            res.render('article/create', {categories: categories});
+        });
+
     },
 
     createPost: (req, res) => {
@@ -37,7 +42,13 @@ module.exports = {
         }
 
         articleArgs.author = req.user.id;
+        articleArgs.tags = [];
         Article.create(articleArgs).then(article => {
+            //Get the tags from the input, split it by space or semicolon,
+            // then remove empty entries.
+            let tagNames = articleArgs.tagNames.split(/\s+|,/).filter(tag => {return tag});
+            initializeTags(tagNames, article.id);
+
             article.prepareInsert();
                 res.redirect('/');
             });
@@ -46,7 +57,7 @@ module.exports = {
     details: (req, res) => {
         let id = req.params.id;
 
-        Article.findById(id).populate('author').then(article => {
+        Article.findById(id).populate('author tags').then(article => {
             if (!req.user){
                 res.render('article/details', { article: article, isUserAuthorized: false});
                 return;
@@ -71,14 +82,20 @@ module.exports = {
             return;
         }
 
-        Article.findById(id).then(article => {
+        Article.findById(id).populate('tags').then(article => {
             req.user.isInRole('Admin').then(isAdmin => {
                 if (!isAdmin && !req.user.isAuthor(article)) {
                     res.redirect('/');
                     return;
                 }
+                Category.find({}).then(categories => {
+                    article.categories = categories;
 
-                res.render('article/edit', article)
+                    article.tagNames = article.tags.map(tag => {return tag.name});
+                    res.render('article/edit', article)
+                });
+
+
             });
         });
     },
@@ -106,10 +123,40 @@ module.exports = {
         if(errorMsg) {
             res.render('article/edit', {error: errorMsg})
         } else {
-            Article.update({_id: id}, {$set: {title: articleArgs.title, content: articleArgs.content}})
-                .then(updateStatus => {
-                    res.redirect(`/article/details/${id}`);
-                })
+            Article.findById(id).populate('category tags').then(article => {
+                if (article.category.id !== articleArgs.category) {
+                    article.category.articles.remove(article.id);
+                    article.category.save();
+                }
+
+                article.category = articleArgs.category;
+                article.title = articleArgs.title;
+                article.content = articleArgs.content;
+
+                let newTagNames = articleArgs.tags.split(/\s+|,/).filter(tag => {return tag});
+
+                //Get me the old article's tags which are not re-entered.
+
+                let oldTags = article.tags.filter(tag => {
+                    return newTagNames.indexOf(tag.name) === -1;
+                });
+
+                for(let tag of oldTags) {
+                    tag.deleteArticle(article.id);
+                    article.deleteTag(tag.id);
+                }
+
+                initializeTags(newTagNames, article.id);
+
+                    Category.findById(article.category).then(category => {
+                        if(category.articles.indexOf(article.id) === -1){
+                            category.articles.push(article.id);
+                            category.save();
+                        }
+
+                        res.redirect(`/article/details/${id}`);
+                    })
+                });
         }
     },
 
@@ -124,13 +171,14 @@ module.exports = {
             return;
         }
 
-        Article.findById(id).then(article => {
+        Article.findById(id).populate('category tags').then(article => {
             req.user.isInRole('Admin').then(isAdmin => {
                 if (!isAdmin && !req.user.isAuthor(article)) {
                     res.redirect('/');
                     return;
                 }
 
+                article.tagNames = article.tags.map(tag => {return tag.name});
                 res.render('article/delete', article)
             });
         });
